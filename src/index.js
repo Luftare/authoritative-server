@@ -21,23 +21,24 @@ const initState = {
   players: [new Player('Jeppe', 0), new Player('Juuso', 0)]
 };
 
-let serverStateHistory = [deepCopy(initState)];
-let clientStateHistory = [deepCopy(initState)];
-
 let clientEvents = [];
 let immediateClientEvents = [];
 let serverEvents = [];
 
-const HISTORY_DURATION = 5000;
+const HISTORY_DURATION = 1000;
 const DT = 16;
 const LATENCY = 45;
-const LATENCY_SWAY = 0;
+const LATENCY_SWAY = 0.5;
+
+const BUFFERED_STATES_COUNT = Math.floor(HISTORY_DURATION / DT);
+let serverStateHistory = [...Array(BUFFERED_STATES_COUNT)].map(() => deepCopy(initState));
+let clientStateHistory = [...Array(BUFFERED_STATES_COUNT)].map(() => deepCopy(initState));
 
 const realLatency = () =>
   LATENCY * (1 - LATENCY_SWAY) + LATENCY * Math.random() * LATENCY_SWAY * 2;
 
 function syncTime() {
-  return Date.now() + LATENCY * 0.5;
+  return Date.now() + LATENCY;
 }
 
 function deepCopy(value) {
@@ -116,12 +117,42 @@ function emitToServer(events) {
   }, realLatency());
 }
 
+const syncedProps = [
+  {
+    selector: state => state.players.find(p => p.name === 'Jeppe'),
+    keys: ['x'],
+    rubberbandStrength: 0.01,
+  }
+];
+
+const staticState = state => ({
+  ...state,
+  players: state.players.filter(p => p.name !== 'Jeppe'),
+});
+
+
+
 function emiteToClient(state) {
-  const copiedState = deepCopy(state);
+  const serverStateSnapshot = deepCopy(state);
 
   setTimeout(() => {
     //At client
-    //handle difference here
+    syncedProps.forEach(({ selector, keys, rubberbandStrength }) => {
+      const currentLocalState = last(clientStateHistory);
+      const localStateSnapshot = last(clientStateHistory.filter(({ time }) => time < serverStateSnapshot.time)) || currentLocalState;
+
+      const currentObject = selector(currentLocalState);
+      const localObjectSnapshot = selector(localStateSnapshot);
+      const serverObjectSnapshot = selector(serverStateSnapshot);
+
+      keys.forEach(key => {
+        const localValue = localObjectSnapshot[key];
+        const serverValue = serverObjectSnapshot[key];
+        const diff = serverValue - localValue;
+        currentObject[key] += diff * rubberbandStrength;
+      })
+
+    });
   }, realLatency());
 }
 
@@ -130,9 +161,9 @@ setInterval(() => {
   const lastState = serverStateHistory[serverStateHistory.length - 1];
   serverStateHistory.push(update(lastState, [], DT, Date.now()));
   serverElement.innerHTML = JSON.stringify(lastState);
-  serverElement.style.marginLeft = `${lastState.players.find(
+  serverElement.style.transform = `translate(${lastState.players.find(
     p => p.name === 'Jeppe'
-  ).x * 10}px`;
+  ).x * 10}px, 0)`;
   emiteToClient(lastState);
 }, DT);
 
@@ -143,9 +174,9 @@ setInterval(() => {
   const newState = update(previousState, immediateClientEvents, DT, syncTime());
   clientStateHistory.push(newState);
   clientElement.innerHTML = JSON.stringify(newState);
-  clientElement.style.marginLeft = `${newState.players.find(
+  clientElement.style.transform = `translate(${newState.players.find(
     p => p.name === 'Jeppe'
-  ).x * 10}px`;
+  ).x * 10}px, 0)`;
   immediateClientEvents = [];
 }, DT);
 
@@ -154,6 +185,15 @@ function dispatch(e) {
   clientEvents.push(extendedEvent);
   immediateClientEvents.push(extendedEvent);
 }
+
+setTimeout(() => {
+  const extendedEvent = { type: 'input.right', value: true, time: syncTime(), name: 'Juuso' };
+  emitToServer([extendedEvent]);
+  setTimeout(() => {
+    const extendedEvent = { type: 'input.right', value: false, time: syncTime(), name: 'Juuso' };
+    emitToServer([extendedEvent]);
+  }, 1000)
+}, 500);
 
 const keysDown = {};
 
